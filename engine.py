@@ -9,7 +9,12 @@ BONUS_TEETH_WAIT_ROUNDS = 3
 
 
 class GameState:
-    """Pure game state that can be copied for AI simulation."""
+    """Pure game state that can be copied for AI simulation.
+    
+    Note: When cloning, player pieces are set to None since pieces are
+    UI/interaction concerns. AI simulation should create new pieces as
+    needed for evaluating moves.
+    """
     
     def __init__(self, grid_obj, players, current_player_index, turn_count, 
                  new_tile_positions=None, last_bonus_teeth_round=0, winner=None):
@@ -54,10 +59,12 @@ class GameState:
                 'dest_player_index': dest_player_index,
                 'head': tile.head,
                 'tooth': tile.tooth,
-                'alive': tile.alive
+                'alive': tile.alive,
+                'background': tile.background
             }
         
         # Deep copy players - create new player objects with same state
+        # Note: pieces are set to None since they are UI concerns
         new_players = []
         for p in self.players:
             new_p = copy.copy(p)
@@ -76,7 +83,8 @@ class GameState:
                 player=player,
                 head=tile_data['head'],
                 tooth=tile_data['tooth'],
-                dest_player=dest_player
+                dest_player=dest_player,
+                background=tile_data['background']
             )
             new_grid.squares[pos].alive = tile_data['alive']
         
