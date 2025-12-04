@@ -1,10 +1,257 @@
 import random
+import copy
 import grid, media
 
 PLAYER_MAX_BITES = 7
 BONUS_TEETH_CHANCE = 0.02
 FIRST_BONUS_TEETH_ROUND = 8
 BONUS_TEETH_WAIT_ROUNDS = 3
+
+
+class GameState:
+    """Pure game state that can be copied for AI simulation."""
+    
+    def __init__(self, grid_obj, players, current_player_index, turn_count, 
+                 new_tile_positions=None, last_bonus_teeth_round=0, winner=None):
+        self.grid = grid_obj
+        self.players = players
+        self.current_player_index = current_player_index
+        self.turn_count = turn_count
+        self.new_tile_positions = new_tile_positions if new_tile_positions else []
+        self.last_bonus_teeth_round = last_bonus_teeth_round
+        self.winner = winner
+    
+    @property
+    def current_player(self):
+        """Get the current player."""
+        if self.current_player_index is not None and 0 <= self.current_player_index < len(self.players):
+            return self.players[self.current_player_index]
+        return None
+    
+    def clone(self):
+        """Create a deep copy for AI simulation without affecting real game."""
+        # Deep copy the grid squares
+        new_grid = grid.Grid(self.grid.size)
+        for pos, tile in self.grid.squares.items():
+            # Find the player index in the original players list
+            player_index = None
+            if tile.player is not None:
+                for i, p in enumerate(self.players):
+                    if p is tile.player:
+                        player_index = i
+                        break
+            
+            dest_player_index = None
+            if tile.dest_player is not None:
+                for i, p in enumerate(self.players):
+                    if p is tile.dest_player:
+                        dest_player_index = i
+                        break
+            
+            # Store indices for later restoration after players are cloned
+            new_grid.squares[pos] = {
+                'player_index': player_index,
+                'dest_player_index': dest_player_index,
+                'head': tile.head,
+                'tooth': tile.tooth,
+                'alive': tile.alive
+            }
+        
+        # Deep copy players - create new player objects with same state
+        new_players = []
+        for p in self.players:
+            new_p = copy.copy(p)
+            new_p.head_location = p.head_location
+            new_p.alive = p.alive
+            new_p.bites = p.bites
+            new_p.colour = p.colour
+            new_p.piece = None  # Pieces are UI concerns, not needed for simulation
+            new_players.append(new_p)
+        
+        # Now restore tile player references using the new player objects
+        for pos, tile_data in new_grid.squares.items():
+            player = new_players[tile_data['player_index']] if tile_data['player_index'] is not None else None
+            dest_player = new_players[tile_data['dest_player_index']] if tile_data['dest_player_index'] is not None else None
+            new_grid.squares[pos] = Tile(
+                player=player,
+                head=tile_data['head'],
+                tooth=tile_data['tooth'],
+                dest_player=dest_player
+            )
+            new_grid.squares[pos].alive = tile_data['alive']
+        
+        # Copy other state
+        new_tile_positions = list(self.new_tile_positions) if self.new_tile_positions else []
+        
+        return GameState(
+            grid_obj=new_grid,
+            players=new_players,
+            current_player_index=self.current_player_index,
+            turn_count=self.turn_count,
+            new_tile_positions=new_tile_positions,
+            last_bonus_teeth_round=self.last_bonus_teeth_round,
+            winner=self.winner
+        )
+    
+    def count_player_tiles(self, player):
+        """Count the number of tiles owned by a player."""
+        return len(self.grid.get_player_positions(player))
+    
+    def get_tooth_positions(self):
+        """Find all positions with collectible teeth."""
+        tooth_positions = []
+        for pos, tile in self.grid.squares.items():
+            if tile.tooth and tile.player is None:
+                tooth_positions.append(pos)
+        return tooth_positions
+
+
+class GameRules:
+    """Stateless game rules that operate on GameState."""
+    
+    @staticmethod
+    def can_drop(state, piece, drop_tile_pos):
+        """Check if a piece can be dropped at the given position."""
+        grid_obj = state.grid
+        drop_tile_x, drop_tile_y = drop_tile_pos
+
+        left, top, right, bottom = piece.get_bounds()
+        piece_width = right + 1
+        piece_height = bottom + 1
+
+        width_squares, height_squares = grid_obj.size
+
+        # 1. Is the piece entirely on the board?
+        if (drop_tile_x < 0 or 
+            drop_tile_y < 0 or 
+            drop_tile_x + piece_width > width_squares or 
+            drop_tile_y + piece_height > height_squares):
+            
+            return False
+
+        # 2. Is every part of the piece on a substrate tile?
+        # 3. If dropped, would the piece in some way attach to the current player?
+
+        has_connection = False
+
+        for pos in piece.squares.keys():
+            x, y = pos
+            source_tile = piece.squares[pos]
+            if source_tile is None:
+                continue  # If there is nothing in this part of the source tile, ignore it
+            dest_x = drop_tile_x + x
+            dest_y = drop_tile_y + y
+            dest_tile = grid_obj.get_square((dest_x, dest_y))
+            if dest_tile.player is not None:
+                return False
+            
+            # Check connections
+            neighbours = grid_obj.get_neighbour_squares((dest_x, dest_y))
+            
+            if source_tile.player in [tile.player for tile in neighbours]:
+                has_connection = True
+
+        return has_connection
+    
+    @staticmethod
+    def get_valid_moves(state, piece):
+        """Return all valid (orientation, position) tuples for a piece."""
+        grid_obj = state.grid
+        valid_moves = []
+        original_orientation = piece.orientation
+        
+        for orientation in range(4):
+            piece.set_orientation(orientation)
+            for pos in grid_obj.squares:
+                if GameRules.can_drop(state, piece, pos):
+                    valid_moves.append((orientation, pos))
+        
+        # Restore original orientation
+        piece.set_orientation(original_orientation)
+        return valid_moves
+    
+    @staticmethod
+    def compute_captures(state, capturing_player, new_tile_positions):
+        """Compute what would be captured given new tile positions."""
+        capture_radials = []
+        
+        for pos in new_tile_positions:
+            capture_radials += GameRules._get_valid_capture_radials(state, pos, capturing_player)
+        
+        return capture_radials
+    
+    @staticmethod
+    def _get_valid_capture_radials(state, new_tile_pos, capturing_player):
+        """Get valid capture radials for a single position."""
+        grid_obj = state.grid
+        capture_radials = []
+
+        # generate radials for this tile
+        radials = grid_obj.get_radials(new_tile_pos)
+
+        # iterate over radials to see if this tile placement results in a capture
+        for r in radials:
+            adjacent_player = grid_obj.get_square(r[0]).player if len(r) > 0 else None
+            
+            # Only proceed if the tile we are querying is adjacent to a tile of a different player
+            if len(r) > 0 and capturing_player != adjacent_player and adjacent_player is not None:
+                current_radial_stack = []
+                for distance, pos in enumerate(r):
+                    square = grid_obj.get_square(pos)
+                    if square.player == capturing_player:
+                        capture_radials.append(current_radial_stack)
+                        break
+                    elif square.player is None:
+                        break
+                    elif square.player != adjacent_player:
+                        break
+                    current_radial_stack.append(pos)
+
+        return capture_radials
+    
+    @staticmethod
+    def simulate_drop(state, piece, drop_tile_pos):
+        """
+        Return a new GameState with the move applied.
+        Does not modify the original state.
+        """
+        if not GameRules.can_drop(state, piece, drop_tile_pos):
+            return None
+        
+        # Clone the state
+        new_state = state.clone()
+        
+        # Find the corresponding player in the cloned state
+        piece_player = piece.player
+        new_player = None
+        for i, p in enumerate(state.players):
+            if p is piece_player:
+                new_player = new_state.players[i]
+                break
+        
+        if new_player is None:
+            return None
+        
+        # Perform the drop on the cloned grid
+        drop_tile_x, drop_tile_y = drop_tile_pos
+        new_tile_positions = []
+        add_tooth_count = 0
+        
+        for pos in piece.squares.keys():
+            x, y = pos
+            dest_pos = (drop_tile_x + x, drop_tile_y + y)
+            
+            if new_state.grid.get_square(dest_pos).tooth:
+                add_tooth_count += 1
+            
+            new_state.grid.set_square(dest_pos, Tile(player=new_player))
+            new_tile_positions.append(dest_pos)
+        
+        new_player.bites = min(new_player.bites + add_tooth_count, PLAYER_MAX_BITES)
+        new_state.new_tile_positions = new_tile_positions
+        
+        return new_state
+
 
 class Game:
     def __init__(self, board_size_squares, players = [], ):
@@ -43,49 +290,27 @@ class Game:
         # Start with a random player
         self.current_player = self.players[random.randint(0, len(self.players) - 1)]
 
-    def can_drop(self, grid, piece, drop_tile_pos):
-        drop_tile_x, drop_tile_y = drop_tile_pos
+    def get_state(self):
+        """Get a GameState representing the current game state."""
+        current_player_index = self.players.index(self.current_player) if self.current_player in self.players else None
+        return GameState(
+            grid_obj=self.grid,
+            players=self.players,
+            current_player_index=current_player_index,
+            turn_count=self.turn_count,
+            new_tile_positions=self.new_tile_positions,
+            last_bonus_teeth_round=self.last_bonus_teeth_round,
+            winner=self.winner
+        )
 
-        left, top, right, bottom = piece.get_bounds()
-        piece_width = right + 1
-        piece_height = bottom + 1
-
-        width_squares, height_squares = grid.size
-
-        # 1. Is the piece entirely on the board?
-        if (drop_tile_x < 0 or 
-            drop_tile_y < 0 or 
-            drop_tile_x + piece_width > width_squares or 
-            drop_tile_y + piece_height > height_squares):
-            
-            return False
-
-        # 2. Is every part of the piece on a substrate tile?
-        # 3. If dropped, would the piece in some way attach to the current player?
-
-        has_connection = False
-
-        for pos in piece.squares.keys():
-            x, y = pos
-            source_tile = piece.squares[pos]
-            if source_tile == None: continue # If there is nothing in this part of the source tile, ignore it
-            dest_x = drop_tile_x + x
-            dest_y = drop_tile_y + y
-            dest_tile = grid.get_square((dest_x, dest_y))
-            if dest_tile.player != None:
-                # print("piece is not (fully) on neutral spaces")
-                return False
-            
-            # Check connections
-            neighbours = grid.get_neighbour_squares((dest_x, dest_y))
-            
-            if source_tile.player in [tile.player for tile in neighbours]: has_connection = True
-
-        if has_connection:
-            return True
-        else:
-            # print("piece has no connection")
-            return False
+    def can_drop(self, grid_arg, piece, drop_tile_pos):
+        """Check if a piece can be dropped at the given position.
+        
+        This method delegates to GameRules.can_drop for backward compatibility.
+        The grid_arg parameter is kept for API compatibility but uses self.grid.
+        """
+        state = self.get_state()
+        return GameRules.can_drop(state, piece, drop_tile_pos)
 
     def drop(self, grid, piece, drop_tile_pos):
         new_tile_positions, add_tooth_count = grid.drop(piece, drop_tile_pos)
@@ -247,12 +472,12 @@ class Game:
         return capture_radials
 
     def compute_captures(self, capturing_player):
-        capture_radials = []
-
-        for pos in self.new_tile_positions:
-            capture_radials += self.get_valid_capture_radials(pos, capturing_player)
-
-        return capture_radials
+        """Compute captures using GameRules for consistency.
+        
+        This method delegates to GameRules.compute_captures.
+        """
+        state = self.get_state()
+        return GameRules.compute_captures(state, capturing_player, self.new_tile_positions)
             
 
     def compute_captures_old(self):
