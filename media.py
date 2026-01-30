@@ -22,75 +22,21 @@ class AnimationManager():
         pygame.display.flip()
 
     def animate(self, animation_queue):
+        """Execute a queue of animations in sequence.
+        
+        Each animation type knows how to execute itself, making this
+        a consistent dispatcher rather than a collection of special cases.
+        """
+        for animation in animation_queue:
+            animation.execute(self)
+        
+        # Final cleanup: apply all tile transitions
         for animation in animation_queue:
             if isinstance(animation, Transition):
-                match animation.mid_tile.animation_state:
-                    case TileAnimation.CUT:
-                        self.sounds.play("cut")
-                    case TileAnimation.PANIC:
-                        self.sounds.play("burp")
-                if isinstance(animation, Capture):
-                    self.sounds.play("pop")
-                    
-                self.game.grid.set_square(animation.pos, animation.mid_tile)
-                self.board_element.draw(self.game.grid)
-                self.refresh_board()
-                time.sleep(0.2)
-            elif isinstance(animation, SoundEvent):
-                self.sounds.play(animation.sound_name)
-                time.sleep(animation.delay)
-            elif isinstance(animation, WinEvent):
-                self.animate_win(self.game.grid, animation.winner)
-            
-        for animation in animation_queue:
-            if isinstance(animation, Transition): self.game.grid.set_square(animation.pos, animation.to_tile)
+                self.game.grid.set_square(animation.pos, animation.to_tile)
             
         self.board_element.draw(self.game.grid)
         self.refresh_board()
-
-        animation_queue = []
-
-    def animate_win(self, grid, winner):
-        # We have a winner!
-        # Fill expanding rects outwards from the head
-        head_x, head_y = winner.head_location
-
-        left = head_x - 1
-        right = head_x + 1
-        top = head_y - 1
-        bottom = head_y + 1
-
-        width, height = grid.size
-
-        can_expand = True
-
-        while can_expand:
-            can_expand = False
-
-            if left > 0:
-                left -= 1
-                can_expand = True
-            if right < width:
-                right += 1
-                can_expand = True
-            if top > 0:
-                top -= 1
-                can_expand = True
-            if bottom < height:
-                bottom +=1
-                can_expand = True
-
-            for y_fill in range(top, bottom):
-                for x_fill in range(left, right):
-                    current_square = grid.get_square((x_fill, y_fill))
-                    if not current_square.player == winner:
-                        current_square.player = winner
-                        current_square.head = False
-                        current_square.tooth = False
-                        current_square.animation_state = TileAnimation.NONE
-            self.board_element.draw(self.game.grid)
-            self.refresh_board()
-            time.sleep(0.1)
 
 class TileRenderer:
     def __init__(self, tile):
@@ -143,24 +89,121 @@ class Sounds:
         pygame.mixer.Sound.play(self.sounds[sound_name])
 
 class Animation:
-    def __init__(self):
-        pass
+    """Base class for all animations."""
+    def execute(self, animation_manager):
+        """Execute this animation using the provided animation manager.
+        
+        Args:
+            animation_manager: The AnimationManager instance that can access
+                             game state, sounds, rendering, etc.
+        """
+        raise NotImplementedError("Subclasses must implement execute()")
 
 class WinEvent(Animation):
+    """Win animation that expands from the winner's head."""
     def __init__(self, winner):
         self.winner = winner
+    
+    def execute(self, am):
+        """Execute the win animation with expanding rings."""
+        grid = am.game.grid
+        head_x, head_y = self.winner.head_location
+
+        left = head_x - 1
+        right = head_x + 1
+        top = head_y - 1
+        bottom = head_y + 1
+
+        width, height = grid.size
+        can_expand = True
+
+        while can_expand:
+            can_expand = False
+
+            if left > 0:
+                left -= 1
+                can_expand = True
+            if right < width:
+                right += 1
+                can_expand = True
+            if top > 0:
+                top -= 1
+                can_expand = True
+            if bottom < height:
+                bottom += 1
+                can_expand = True
+
+            # Track if any tiles were taken over in this expansion cycle
+            tiles_taken = False
+            for y_fill in range(top, bottom):
+                for x_fill in range(left, right):
+                    current_square = grid.get_square((x_fill, y_fill))
+                    if not current_square.player == self.winner:
+                        current_square.player = self.winner
+                        current_square.head = False
+                        current_square.tooth = False
+                        current_square.animation_state = TileAnimation.NONE
+                        tiles_taken = True
+            
+            # We don't play 'pop' sounds for this type of animation
+            
+            am.board_element.draw(am.game.grid)
+            am.refresh_board()
+            time.sleep(0.1)
 
 class SoundEvent(Animation):
-    def __init__(self, sound_name, delay = 0):
+    """Play a sound with optional delay."""
+    def __init__(self, sound_name, delay=0):
+        if delay < 0:
+            raise ValueError("Delay must be non-negative")
         self.sound_name = sound_name
         self.delay = delay
+    
+    def execute(self, am):
+        """Play the sound and wait for the delay."""
+        am.sounds.play(self.sound_name)
+        if self.delay > 0:
+            time.sleep(self.delay)
 
 class Transition(Animation):
+    """Transition a tile from one state to another with visual feedback."""
     def __init__(self, pos, from_tile, mid_tile, to_tile):
         self.from_tile = from_tile
         self.mid_tile = mid_tile
         self.to_tile = to_tile
         self.pos = pos
+    
+    def get_sounds(self):
+        """Get the list of sounds to play for this transition.
+        
+        Returns a list of sound names to play before the visual update.
+        Subclasses can override to add additional sounds.
+        """
+        sounds = []
+        # Play sound based on the mid_tile animation state
+        match self.mid_tile.animation_state:
+            case TileAnimation.CUT:
+                sounds.append("cut")
+            case TileAnimation.PANIC:
+                sounds.append("burp")
+        return sounds
+    
+    def execute(self, am):
+        """Execute the tile transition with sound based on animation state."""
+        # Play all sounds for this transition
+        for sound in self.get_sounds():
+            am.sounds.play(sound)
+        
+        # Show the mid-state
+        am.game.grid.set_square(self.pos, self.mid_tile)
+        am.board_element.draw(am.game.grid)
+        am.refresh_board()
+        time.sleep(0.2)
 
 class Capture(Transition):
-    pass
+    """Capture transition with 'pop' sound."""
+    def get_sounds(self):
+        """Get sounds for capture: base transition sounds plus pop."""
+        sounds = super().get_sounds()
+        sounds.append("pop")
+        return sounds
