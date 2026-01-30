@@ -435,7 +435,7 @@ class Game:
             takeover_tile = self.grid.get_square(takeover_pos)
             mid_tile = Tile(player = victim, dest_player = killer)
             dest_tile = Tile(player = killer)
-            animation_queue.append(media.Transition(takeover_pos, takeover_tile, mid_tile, dest_tile))
+            animation_queue.append(media.Capture(takeover_pos, takeover_tile, mid_tile, dest_tile))
 
         return animation_queue
 

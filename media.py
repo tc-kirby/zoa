@@ -145,9 +145,7 @@ class WinEvent(Animation):
                         current_square.animation_state = TileAnimation.NONE
                         tiles_taken = True
             
-            # Play 'pop' sound if tiles were taken over in this cycle
-            if tiles_taken:
-                am.sounds.play("pop")
+            # We don't play 'pop' sounds for this type of animation
             
             am.board_element.draw(am.game.grid)
             am.refresh_board()
