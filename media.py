@@ -80,6 +80,8 @@ class AnimationManager():
                 bottom +=1
                 can_expand = True
 
+            # Track if any tiles were taken over in this expansion cycle
+            tiles_taken = False
             for y_fill in range(top, bottom):
                 for x_fill in range(left, right):
                     current_square = grid.get_square((x_fill, y_fill))
@@ -88,6 +90,12 @@ class AnimationManager():
                         current_square.head = False
                         current_square.tooth = False
                         current_square.animation_state = TileAnimation.NONE
+                        tiles_taken = True
+            
+            # Play 'pop' sound if tiles were taken over in this cycle
+            if tiles_taken:
+                self.sounds.play("pop")
+            
             self.board_element.draw(self.game.grid)
             self.refresh_board()
             time.sleep(0.1)
