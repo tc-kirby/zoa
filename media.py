@@ -12,10 +12,10 @@ class TileAnimation(Enum):
     ROT = 4
 
 # ROT ASSETS: rot is a distinct event (TileAnimation.ROT, the Rot transition and the "rot"
-# sound) but for now reuses the "cut" assets. To give rot its own look/sound, change
+# sound) but for now reuses the "cut" visual. To give rot its own look/sound, change
 # these two lines only.
 ROT_VISUAL = TileAnimation.CUT  # tile graphic drawn for TileAnimation.ROT
-ROT_SOUND = "cut"               # sound file (without .wav) played for the "rot" sound
+ROT_SOUND = "fizz"              # sound file (without .wav) played for the "rot" sound
 
 class AnimationManager():
     def __init__(self, game, sounds, board_element, screen):
