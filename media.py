@@ -12,10 +12,9 @@ class TileAnimation(Enum):
     ROT = 4
 
 # ROT ASSETS: rot is a distinct event (TileAnimation.ROT, the Rot transition and the "rot"
-# sound) but for now reuses the "cut" visual. To give rot its own look/sound, change
-# these two lines only.
-ROT_VISUAL = TileAnimation.CUT  # tile graphic drawn for TileAnimation.ROT
-ROT_SOUND = "fizz"              # sound file (without .wav) played for the "rot" sound
+# sound). To change its look/sound, change these two lines only.
+ROT_TILE_POS = (0, 3)  # (column, row) in tiles_big.bmp of the rot overlay graphic
+ROT_SOUND = "fizz"     # sound file (without .wav) played for the "rot" sound
 
 class AnimationManager():
     def __init__(self, game, sounds, board_element, screen):
@@ -61,14 +60,16 @@ class TileRenderer:
         elif self.tile.tooth:
             foreground_rect = pygame.Rect(0, 1 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
         else:
-            animation_state = ROT_VISUAL if self.tile.animation_state == TileAnimation.ROT else self.tile.animation_state
-            match animation_state:
+            match self.tile.animation_state:
                 case TileAnimation.CUT:
                     foreground_rect = pygame.Rect(0, 2 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
                 case TileAnimation.PANIC:
                     foreground_rect = pygame.Rect(x_offset * SQUARE_SIZE, 3 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
                 case TileAnimation.HAPPY:
                     foreground_rect = pygame.Rect(x_offset * SQUARE_SIZE, 4 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
+                case TileAnimation.ROT:
+                    rot_col, rot_row = ROT_TILE_POS
+                    foreground_rect = pygame.Rect(rot_col * SQUARE_SIZE, rot_row * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
                 case _:
                     foreground_rect = None
 
