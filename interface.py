@@ -309,10 +309,17 @@ class UI:
         self.game.clear_bitten_squares(self.bite_attempt_positions)
         self.end_bite()
 
+    def start_turn(self):
+        """Run all start-of-turn hooks (bonus teeth, rot) for the current player, human or AI,
+        then resolve any deaths caused by them."""
+        animation_queue = self.game.start_turn()
+        if animation_queue:
+            self.animation_manager.animate(animation_queue)
+            self.resolve_deaths()
+
     def next_turn(self):
         self.game.next_turn()
-        animation_queue = self.game.add_bonus_teeth()
-        if animation_queue: self.animation_manager.animate(animation_queue)
+        self.start_turn()
 
         # Is the current player an AI? If so, give it a turn
         while isinstance(self.game.current_player, player.AIPlayer) and not self.game.winner:
@@ -321,7 +328,10 @@ class UI:
                 self.draw_elements()
                 self.draw_screen()
                 time.sleep(0.2)
+            if self.game.winner:
+                break
             self.game.next_turn()
+            self.start_turn()
 
         # Back to human players, so enable the piece pal
         self.piece_pal_element.has_piece = True
@@ -337,6 +347,11 @@ class UI:
             if animation_queue:
                 self.animation_manager.animate(animation_queue)
 
+        self.resolve_deaths()
+
+        self.game.new_tile_positions = []
+
+    def resolve_deaths(self):
         # Check which squares are alive, remove dead ones and animate cuts to the removed squares
         self.game.check_alive()
         animation_queue = self.game.get_death_anim_stages()
@@ -346,11 +361,9 @@ class UI:
         # Check if any players have died
         self.game.remove_dead_players()
 
-        if len(self.game.players) == 1:
+        if len(self.game.players) == 1 and not self.game.winner:
             self.animation_manager.animate([media.WinEvent(self.game.players[0])])
             self.game.winner = self.game.players[0]
-
-        self.game.new_tile_positions = []
 
     def start_bite(self):
         print("Starting bite")

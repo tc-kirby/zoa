@@ -9,6 +9,13 @@ class TileAnimation(Enum):
     CUT = 1
     PANIC = 2
     HAPPY = 3
+    ROT = 4
+
+# ROT ASSETS: rot is a distinct event (TileAnimation.ROT, the Rot transition and the "rot"
+# sound) but for now reuses the "cut" assets. To give rot its own look/sound, change
+# these two lines only.
+ROT_VISUAL = TileAnimation.CUT  # tile graphic drawn for TileAnimation.ROT
+ROT_SOUND = "cut"               # sound file (without .wav) played for the "rot" sound
 
 class AnimationManager():
     def __init__(self, game, sounds, board_element, screen):
@@ -54,14 +61,15 @@ class TileRenderer:
         elif self.tile.tooth:
             foreground_rect = pygame.Rect(0, 1 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
         else:
-            match self.tile.animation_state:
+            animation_state = ROT_VISUAL if self.tile.animation_state == TileAnimation.ROT else self.tile.animation_state
+            match animation_state:
                 case TileAnimation.CUT:
                     foreground_rect = pygame.Rect(0, 2 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
                 case TileAnimation.PANIC:
                     foreground_rect = pygame.Rect(x_offset * SQUARE_SIZE, 3 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
                 case TileAnimation.HAPPY:
                     foreground_rect = pygame.Rect(x_offset * SQUARE_SIZE, 4 * SQUARE_SIZE, SQUARE_SIZE, SQUARE_SIZE)
-                case TileAnimation.NONE:
+                case _:
                     foreground_rect = None
 
         # Fill with key colour so that if there is no background, the background will be transparent
@@ -86,6 +94,8 @@ class Sounds:
             self.sounds[sound_name] = pygame.mixer.Sound(os.path.join(base_path, filename))
 
     def play(self, sound_name):
+        if sound_name == "rot":
+            sound_name = ROT_SOUND
         pygame.mixer.Sound.play(self.sounds[sound_name])
 
 class Animation:
@@ -199,6 +209,11 @@ class Transition(Animation):
         am.board_element.draw(am.game.grid)
         am.refresh_board()
         time.sleep(0.2)
+
+class Rot(Transition):
+    """Rot transition: a tile decays away. Distinct from a plain cut so it can get its own assets."""
+    def get_sounds(self):
+        return ["rot"]
 
 class Capture(Transition):
     """Capture transition with 'pop' sound."""
