@@ -1,6 +1,15 @@
 import random
 import copy
+import os
 import grid, media
+
+DEBUG = os.environ.get("ZOA_DEBUG", "0") == "1"
+
+
+def debug_log(*args):
+    if DEBUG:
+        print("[engine]", *args)
+
 
 PLAYER_MAX_BITES = 7
 BONUS_TEETH_CHANCE = 0.02
@@ -262,8 +271,8 @@ class GameRules:
 
 
 class Game:
-    def __init__(self, board_size_squares, players = [], ):
-        self.players = players
+    def __init__(self, board_size_squares, players=None):
+        self.players = players if players is not None else []
         self.current_player = None
         self.winner = None
         self.turn_count = 0
@@ -343,7 +352,7 @@ class Game:
     # If we are far enough through the game, there is a chance that extra teeth might appear on the board.
     # We allocate one per player into random empty squares.
     # If there are more players than empty squares, just put a tooth in every empty square.
-    # Returns an animation queue containing the 'oh smooth' sound.
+    # Always returns an animation queue (empty if no bonus teeth appear).
 
     def add_bonus_teeth(self):
         animation_queue = []
@@ -360,8 +369,9 @@ class Game:
             for square in empty_squares[:n_teeth]:
                 square.tooth = True
 
+            debug_log(f"bonus teeth placed: {n_teeth} (round {round_count})")
             animation_queue.append(media.SoundEvent("oh_smooth"))
-            return animation_queue
+        return animation_queue
 
     def next_turn(self):
         self.current_player.piece = None
@@ -380,30 +390,31 @@ class Game:
 
         if current_bite_attempt_positions:
             bites_left = self.current_player.bites - len(current_bite_attempt_positions)
-            #print(f"player {self.current_player} has {self.current_player.bites} available and {len(current_bite_attempt_positions)} attempted bite positions")
+            debug_log(f"player {self.current_player} has {self.current_player.bites} available and {len(current_bite_attempt_positions)} attempted bite positions")
 
             # If there is any overlap between neighbour_positions and bite_attempt_positions, this is a continuation of a bite that has already begun to be marked
-            continuation = True if len(list(set(neighbour_positions) & set(current_bite_attempt_positions))) > 0 else False
+            continuation = len(set(neighbour_positions) & set(current_bite_attempt_positions)) > 0
 
         else:
             bites_left = self.current_player.bites
             continuation = False
 
-        #print(f"current player: {self.current_player}, target player: {bite_mark_square.player}, bites left: {bites_left}, next to own: {next_to_own}, continuation: {continuation}, target is head: {bite_mark_square.head}")
+        debug_log(f"current player: {self.current_player}, target player: {bite_mark_square.player}, bites left: {bites_left}, next to own: {next_to_own}, continuation: {continuation}, target is head: {bite_mark_square.head}")
 
         if (bites_left > 0 and
             (next_to_own or continuation) and
             not bite_mark_square.head and
-            not bite_mark_square.player == None and
-            not bite_mark_square.player == self.current_player):
+            bite_mark_square.player is not None and
+            bite_mark_square.player != self.current_player):
 
             bite_mark_square.tooth = True
             return True
         
-        else: return False
+        else:
+            return False
 
     def clear_bitten_squares(self, bite_attempt_positions):
-        #print(f"Clearing bite {bite_attempt_positions}")
+        debug_log(f"Clearing bite {bite_attempt_positions}")
         if bite_attempt_positions:
             for pos in bite_attempt_positions:
                 bite_attempt_square = self.grid.get_square(pos)
@@ -411,7 +422,7 @@ class Game:
 
     # Called when a bite has been validated and needs to be executed
     def get_bite_anim_stages(self, bite_attempt_positions):
-        #print(f"Determining bite animation stages for positions {bite_attempt_positions}")
+        debug_log(f"Determining bite animation stages for positions {bite_attempt_positions}")
         animation_queue = []
         
         for pos in bite_attempt_positions:
@@ -440,44 +451,8 @@ class Game:
         return animation_queue
 
     def get_valid_capture_radials(self, new_tile_pos, capturing_player):
-        capture_radials = []
-
-        # generate radials for this tile
-        radials = self.grid.get_radials(new_tile_pos)
-
-        # iterate over radials to see if this tile placement results in a capture
-        print(f"---{len(radials)}")
-        for r in radials:
-            adjacent_player = self.grid.get_square(r[0]).player if len(r) > 0 else None
-            
-            # Only proceed if the tile we are querying is adjacent to a tile of a different player
-            print(len(r), capturing_player, adjacent_player)
-            if len(r) > 0 and capturing_player != adjacent_player and adjacent_player != None:
-                print(f"Computing captures...")
-                print(f"Could {capturing_player} capture {adjacent_player}?")
-                current_radial_stack = []
-                for distance, pos in enumerate(r):
-                    square = self.grid.get_square(pos)
-                    if square.player == capturing_player:
-                        print(f"hit self at {distance}: capture!")
-                        capture_radials.append(current_radial_stack)
-                        break
-                    elif square.player == None:
-                        print(f"hit neutral ground at {distance} - no capture")
-                        break
-                    elif square.player != adjacent_player:
-                        print(f"hit a different player {square.player} at {distance} - no capture")
-                        break
-                    current_radial_stack.append(pos)
-                        
-                else:
-                    #print("no adjacent player")
-                    pass
-            else:
-                #print("no radial")
-                pass
-
-        return capture_radials
+        """Delegate to GameRules while preserving this method for compatibility."""
+        return GameRules._get_valid_capture_radials(self.get_state(), new_tile_pos, capturing_player)
 
     def compute_captures(self, capturing_player):
         """Compute captures using GameRules for consistency.
@@ -488,65 +463,18 @@ class Game:
         return GameRules.compute_captures(state, capturing_player, self.new_tile_positions)
             
 
-    def compute_captures_old(self):
-        # We assume that this subroutine is only called once per turn, as it only provides for one player to make captures.
-        capture_radials = []
-
-        # Check new tiles for ability to capture
-        for new_tile_pos in self.new_tile_positions:
-            current_tile = self.grid.get_square(new_tile_pos)
-            capturing_player = current_tile.player
-            # generate radials for this tile
-            radials = self.grid.get_radials(new_tile_pos)
-            
-            # iterate over radials to see if this tile placement results in a capture
-            for r in radials:
-                adjacent_player = r[0].player if len(r) > 0 else None
-                
-                # Only proceed if the tile we are querying is adjacent to a tile of a different player
-                if len(r) > 0 and capturing_player != adjacent_player and adjacent_player != None:
-                    # print(f"Computing captures...")
-                    # print(f"Could {capturing_player} capture {adjacent_player}?")
-                    current_radial_stack = []
-                    for distance, tile in enumerate(r):
-                        
-                        # Stop iterating if we have gone onto neutral ground or if we have hit a third player
-                        if tile.player == None:
-                            # print(f"hit neutral ground at {distance} - no capture")
-                            break
-                        elif tile.player == capturing_player:
-                            # print(f"hit self at {distance}: capture!")
-                            capture_radials.append(current_radial_stack)
-                            break
-                        elif tile.player != adjacent_player:
-                            # print(f"hit a different player {tile.player.index} at {distance} - no capture")
-                            break
-                        current_radial_stack.append(tile)
-                            
-                    else:
-                        #print("no adjacent player")
-                        pass
-                else:
-                    #print("no radial")
-                    pass
-        
-        #if capture_radials: print(f"Player {capturing_player} to capture in radial(s):")
-        #for cr in capture_radials: print(cr)
-
-        return capturing_player, capture_radials
-    
     def get_capture_anim_stages(self, capturing_player, capture_radials):
         animation_queue = []
         death_transitions = None
         captured_tile_positions = []
 
         # Perform any captures from the queue
-        #print(f"Computing transition queue with {len(capture_radials)} capture radials...")
+        debug_log(f"Computing transition queue with {len(capture_radials)} capture radials...")
 
         for cr in capture_radials:
             for current_pos in cr:
                 current_tile = self.grid.get_square(current_pos)
-                # print(f"Tile {current_tile} captured by player {capturing_player}.")
+                debug_log(f"Tile {current_tile} captured by player {capturing_player}.")
 
                 # Only capture tiles that haven't already been captured
                 if current_pos not in captured_tile_positions:
@@ -575,7 +503,7 @@ class Game:
             transition_back_to_normal = media.Transition(capturing_player.head_location, mid_tile, capturer_head_tile, capturer_head_tile)
             animation_queue.append(transition_back_to_normal)
 
-        #print(f"Transition queue complete. Length = {len(animation_queue)}")
+        debug_log(f"Transition queue complete. Length = {len(animation_queue)}")
         return animation_queue
                     
 
@@ -605,8 +533,8 @@ class Game:
         for y in range(grid.BOARD_HEIGHT_SQUARES):
             for x in range(grid.BOARD_WIDTH_SQUARES):
                 current_tile = self.grid.get_square((x, y))
-                if current_tile.player != None and current_tile.alive == False:
-                    # print(f"Tile {current_tile} died.")
+                if current_tile.player is not None and current_tile.alive is False:
+                    debug_log(f"Tile {current_tile} died.")
                     mid_tile = Tile(player = current_tile.player, animation_state = media.TileAnimation.CUT)
                     dest_tile = Tile(player = None)
                     animation_queue.append(media.Transition((x, y), current_tile, mid_tile, dest_tile))
@@ -690,7 +618,9 @@ class Piece(grid.Grid):
 
     def __init__(self, piece_type = None, player = None):
         super().__init__(4)
-        self.piece_type = random.randint(0, len(self.piece_types) - 1) if not piece_type else piece_type
+        if piece_type is None:
+            piece_type = random.randint(0, len(self.piece_types) - 1)
+        self.piece_type = piece_type
         self.player = player
         self.set_orientation(0)
 
