@@ -11,10 +11,37 @@ def debug_log(*args):
         print("[engine]", *args)
 
 
+def parse_rot_chance(value, default):
+    """Parse a rot chance (a float between 0 and 1). Invalid values give the default."""
+    if value is None:
+        return default
+    try:
+        chance = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not 0.0 <= chance <= 1.0:  # also rejects NaN
+        return default
+    return chance
+
+
 PLAYER_MAX_BITES = 7
 BONUS_TEETH_CHANCE = 0.02
 FIRST_BONUS_TEETH_ROUND = 8
 BONUS_TEETH_WAIT_ROUNDS = 3
+
+# "Rot" mechanic, used to break stalemates. When more than ROT_OCCUPANCY_THRESHOLD of
+# the whole board is occupied, there is a ROT_CHANCE chance per ROUND (not per turn) that
+# one randomly chosen player rots at the start of their turn. A rotting player loses
+# round(ROT_FRACTION * their tiles) tiles (at least 1, at most ROT_MAX_TILES), never heads,
+# picked at random but weighted towards tiles touching other players or the board edge:
+# weight = 1 + ROT_EXPOSURE_BONUS * exposure.
+# ZOA_ROT_CHANCE overrides ROT_CHANCE (e.g. ZOA_ROT_CHANCE=1 forces rot whenever the
+# board is over the threshold); invalid values fall back to the default.
+ROT_OCCUPANCY_THRESHOLD = 0.8
+ROT_CHANCE = parse_rot_chance(os.environ.get("ZOA_ROT_CHANCE"), 0.3)
+ROT_FRACTION = 0.05
+ROT_MAX_TILES = 4
+ROT_EXPOSURE_BONUS = 3
 
 
 class GameState:
@@ -281,6 +308,14 @@ class Game:
         self.grid.blank_squares()
         self.last_bonus_teeth_round = 0
 
+        # Rot state. A "round" is one turn for each player alive when the round started.
+        # rot_round_turns_left counts the turns remaining in the current round (rather than
+        # deriving it from turn_count % len(players), which breaks when players are removed).
+        # rot_target_player is the single player who will rot this round (None if the roll failed).
+        self.rot_round_turns_left = 0
+        self.rot_target_player = None
+        self.pending_next_player = None
+
         # print(f"Setting up game with {len(self.players)} players...")
         if len(self.players) == 2:
             self.players[0].head_location = (4, 4)
@@ -340,6 +375,17 @@ class Game:
 
     # Remove any dead players
     def remove_dead_players(self):
+        # If the current player is being removed, remember who should play next
+        # (next_turn can't find them using index() once they've gone).
+        if self.current_player in self.players and not self.current_player.alive:
+            start = self.players.index(self.current_player)
+            self.pending_next_player = None
+            for offset in range(1, len(self.players) + 1):
+                candidate = self.players[(start + offset) % len(self.players)]
+                if candidate.alive:
+                    self.pending_next_player = candidate
+                    break
+
         new_players = []
         for player in self.players:
             if player.alive:
@@ -373,12 +419,111 @@ class Game:
             animation_queue.append(media.SoundEvent("oh_smooth"))
         return animation_queue
 
+    def get_occupancy(self):
+        """Fraction of the whole board's squares that are owned by a player."""
+        total = len(self.grid.squares)
+        if total == 0:
+            return 0.0
+        occupied = sum(1 for tile in self.grid.squares.values() if tile.player is not None)
+        return occupied / total
+
+    def select_rot_positions(self, player, rng=random):
+        """Choose which of player's tiles rot. Pure: does not modify the board.
+
+        Heads never rot. Tiles are sampled without replacement, weighted by
+        1 + ROT_EXPOSURE_BONUS * exposure, where exposure is the number of neighbours owned
+        by another player plus the number of off-board sides.
+        """
+        player_positions = self.grid.get_player_positions(player)
+        eligible = [pos for pos in player_positions if not self.grid.get_square(pos).head]
+        n = round(ROT_FRACTION * len(player_positions))
+        n = min(max(n, 1), ROT_MAX_TILES, len(eligible))
+
+        weights = []
+        for pos in eligible:
+            neighbours = self.grid.get_neighbour_positions(pos)
+            enemy_neighbours = sum(
+                1 for npos in neighbours
+                if self.grid.get_square(npos).player not in (None, player))
+            off_board_sides = 4 - len(neighbours)
+            weights.append(1 + ROT_EXPOSURE_BONUS * (enemy_neighbours + off_board_sides))
+
+        selected = []
+        for _ in range(n):
+            index = rng.choices(range(len(eligible)), weights=weights, k=1)[0]
+            selected.append(eligible.pop(index))
+            weights.pop(index)
+        return selected
+
+    def get_rot_anim_stages(self, positions):
+        """Build the rot animation queue and remove the tiles (like get_bite_anim_stages)."""
+        animation_queue = []
+        for pos in positions:
+            current_tile = self.grid.get_square(pos)
+            mid_tile = Tile(player = current_tile.player, animation_state = media.TileAnimation.ROT)
+            dest_tile = Tile(player = None)
+
+            animation_queue.append(media.Rot(pos, current_tile, mid_tile, dest_tile))
+            current_tile.player = None # TODO: HACK (as in get_bite_anim_stages)
+
+        return animation_queue
+
+    def _update_rot_round(self, rng):
+        """Start a new rot round if the previous one is over: roll once, and if it
+        succeeds choose exactly one living player to be this round's rot target."""
+        if self.rot_round_turns_left > 0:
+            return
+        self.rot_round_turns_left = len(self.players)
+        self.rot_target_player = None
+        if rng.random() < ROT_CHANCE:
+            living = [p for p in self.players if p.alive]
+            if living:
+                self.rot_target_player = rng.choice(living)
+        debug_log(f"rot round started; target = {self.rot_target_player}")
+
+    def rot_player_extremities(self, rng=random):
+        """Called at the start of the current player's turn. Rots the current player only if
+        they are this round's target and the board is over the occupancy threshold.
+        Always returns an animation queue (empty if nothing rots). The caller must
+        then resolve any resulting deaths (check_alive etc)."""
+        self._update_rot_round(rng)
+        self.rot_round_turns_left -= 1
+
+        target = self.rot_target_player
+        if target is None or target is not self.current_player:
+            return []
+        # The target gets one chance only, even if the round outlasts player removals
+        self.rot_target_player = None
+        if not target.alive or target not in self.players:
+            debug_log("rot target is no longer alive; skipping")
+            return []
+        occupancy = self.get_occupancy()
+        if occupancy <= ROT_OCCUPANCY_THRESHOLD:
+            debug_log(f"rot skipped: occupancy {occupancy:.2f} not above threshold")
+            return []
+
+        positions = self.select_rot_positions(target, rng)
+        debug_log(f"rot: player {target} loses {positions} (occupancy {occupancy:.2f})")
+        return self.get_rot_anim_stages(positions)
+
+    def start_turn(self, rng=random):
+        """Run all start-of-turn hooks for the current player (human or AI).
+        Returns an animation queue (possibly empty)."""
+        animation_queue = self.add_bonus_teeth()
+        animation_queue += self.rot_player_extremities(rng)
+        return animation_queue
+
     def next_turn(self):
         self.current_player.piece = None
-        new_player_index = (self.players.index(self.current_player) + 1) % len(self.players)
-        
+        if self.current_player in self.players:
+            new_player_index = (self.players.index(self.current_player) + 1) % len(self.players)
+            next_player = self.players[new_player_index]
+        else:
+            next_player = self.pending_next_player if self.pending_next_player in self.players else self.players[0]
+        self.pending_next_player = None
+
         self.turn_count += 1
-        self.current_player = self.players[new_player_index]
+        self.current_player = next_player
         self.current_player.piece = Piece(player = self.current_player)
 
     # Attempt to mark a square as bitten. If valid, return the (now adjusted) bite attempt positions array. If invalid, return None.
